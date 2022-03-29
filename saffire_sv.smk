@@ -639,5 +639,5 @@ rule saff_out:
 		hrs = 24
 	shell:
 		'''
-		rb stats --paf {input.paf} > {output.bed}
+		rb stats --paf {input.paf} > {output.saf}
 		'''
