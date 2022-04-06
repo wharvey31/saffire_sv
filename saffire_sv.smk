@@ -48,7 +48,11 @@ def find_qpos(row_check, broken_check):
 	else:
 		return broken_check.loc[(broken_check['r_chr'] == row_check['r_chr']) & (broken_check['q_chr'] == broken_check['q_chr']) & ((broken_check['r_end'] >= broken_check['r_pos']) | (broken_check['r_pos'] >= row_check['r_end']))]['q_pos'].values[0]
 
-
+def check_trans(calls):
+	if 'SYNTENIC' in calls:
+		return 'SYNTENIC'
+	else:
+		return calls [0]
 
 def find_paf(wildcards):
 	return manifest_df.at[wildcards.sample, 'PAF']
@@ -290,12 +294,15 @@ rule call_transposition:
 		gap = rules.call_gaps.output.gap,
 		inv = rules.call_inv.output.inv
 	output:
-		trans = 'tmp/{sample}_transp.bed'
+		trans = 'tmp/{sample}_transp-{direct}.bed'
 	threads: 1
 	resources: 
 		mem = 8,
 		hrs = 24
 	run:
+		dir_dict = {'rev' : {'q_pos' : 'q_end', 'q_end' : 'q_pos', 'r_pos' : 'r_end', 'r_end' : 'r_pos'}, 'for' : {'q_pos' : 'q_pos', 'q_end' : 'q_end', 'r_pos' : 'r_pos', 'r_end' : 'r_end'}}
+		sort_dict = {'for' : True, 'rev' : False} 
+
 		df = pd.read_csv(input.broken, sep='\t', header=None, names=['q_chr', 'q_len', 'q_pos', 'q_end', 'strand', 'r_chr', 'r_len', 'r_pos', 'r_end', 'nmatch', 'alen', 'mapq', 'id', 'cg'])
 
 		df = df.sort_values(['r_chr', 'r_pos']).reset_index(drop=True)
@@ -314,79 +321,96 @@ rule call_transposition:
 			trans_len = 0
 			last_syn_id = 0
 			prev_inter = False
-			contig_df = df.loc[df['q_chr'] == contig].sort_values(['q_pos']).copy()
+			contig_df = df.loc[df['q_chr'] == contig].sort_values(['q_pos'], ascending=sort_dict[wildcards.direct]).copy()
 			contig_chr = contig_df.groupby('r_chr').sum().reset_index().sort_values(['alen'], ascending=False).iloc[0]['r_chr']
 			for i, index in enumerate(contig_df.index):
 				if contig_df.iloc[i]['q_len'] < 1000000:
-					df.at[index, 'TRANS'] = 'SMALL_CTG'
+					df.at[index, f'TRANS_{wildcards.direct}'] = 'SMALL_CTG'
 					prev_inter = False
 				elif (contig_df.iloc[i]['r_chr'] != contig_chr):
-					df.at[index, 'TRANS'] = 'INTER'
+					df.at[index, f'TRANS_{wildcards.direct}'] = 'INTER'
 					prev_inter = True
 				elif df.at[index, 'strand'] == '-':
-					df.at[index, 'TRANS'] = 'INV'
+					df.at[index, f'TRANS_{wildcards.direct}'] = 'INV'
 					prev_inter = False
 				else:
 					if prev_inter == True and i != len(contig_df)-1 and i != 0:
 						if len(contig_df) == 1:
-							df.at[index, 'TRANS'] = 'SYNTENIC'
+							df.at[index, f'TRANS_{wildcards.direct}'] = 'SYNTENIC'
 							prev_inter = False
 						else:
 							check_up = i+1
-							end_pred = contig_df.iloc[check_up]['r_pos']
+							end_pred = contig_df.iloc[check_up][dir_dict[wildcards.direct]['r_pos']]
 							start_pred = max(0, end_pred-contig_df.iloc[i]['nmatch'])
-							if np.abs(start_pred-contig_df.iloc[i]['r_pos']) < 30000:
-								df.at[index, 'TRANS'] = 'SYNTENIC'
+							if np.abs(start_pred-contig_df.iloc[i][dir_dict[wildcards.direct]['r_pos']]) < 30000:
+								df.at[index, f'TRANS_{wildcards.direct}'] = 'SYNTENIC'
 								prev_inter = False
 								last_trans = False
 								last_syn_id = i
 							else:
-								gap_bed = BedTool.from_dataframe(pd.DataFrame.from_dict({'#chr' : [contig_chr], 'start' : [min(contig_df.iloc[i]['r_pos'], start_pred)], 'end' : [max(contig_df.iloc[i]['r_pos'], start_pred)]}))
+								gap_bed = BedTool.from_dataframe(pd.DataFrame.from_dict({'#chr' : [contig_chr], 'start' : [min(contig_df.iloc[i][dir_dict[wildcards.direct]['r_pos']], start_pred)], 'end' : [max(contig_df.iloc[i][dir_dict[wildcards.direct]['r_pos']], start_pred)]}))
 								cov_df = gap_bed.coverage(sv_bed).to_dataframe(names=['#chr', 'start', 'end', 'events', 'bases', 'len', 'perc'])
 								if cov_df.iloc[0]['perc'] > .90:
-									df.at[index, 'TRANS'] = 'SYNTENIC'
+									df.at[index, f'TRANS_{wildcards.direct}'] = 'SYNTENIC'
 									prev_inter = False
 									last_trans = False
 									last_syn_id = i
 								else:
-									df.at[index, 'TRANS'] = 'TRANSPOSE'
+									df.at[index, f'TRANS_{wildcards.direct}'] = 'TRANSPOSE'
 									prev_inter = False
 									last_trans = True
 									trans_len = df.at[index, 'alen']
 					elif i == len(contig_df)-1 or i == 0:
-						df.at[index, 'TRANS'] = 'EDGE'
+						df.at[index, f'TRANS_{wildcards.direct}'] = 'EDGE'
 					elif i != 0 and i != len(contig_df)-1:
 						if last_trans == False:
 							check_down = i-1
-							start_pred = contig_df.iloc[check_down]['r_end']
+							start_pred = contig_df.iloc[check_down][dir_dict[wildcards.direct]['r_end']]
 						else:
 							check_down = last_syn_id
-							start_pred = contig_df.iloc[check_down]['r_end']+trans_len
+							start_pred = contig_df.iloc[check_down][dir_dict[wildcards.direct]['r_end']]+trans_len
 						check_up = i+1
-						end_pred = contig_df.iloc[check_up]['r_pos']
-						if np.abs(start_pred-contig_df.iloc[i]['r_pos']) < 30000 or contig_df.iloc[i]['alen'] > 1000000:
-							df.at[index, 'TRANS'] = 'SYNTENIC'
+						end_pred = contig_df.iloc[check_up][dir_dict[wildcards.direct]['r_pos']]
+						if np.abs(start_pred-contig_df.iloc[i][dir_dict[wildcards.direct]['r_pos']]) < 30000 or contig_df.iloc[i]['alen'] > 1000000:
+							df.at[index, f'TRANS_{wildcards.direct}'] = 'SYNTENIC'
 							prev_inter = False
 							last_trans = False
 							last_syn_id = i
-						elif (contig_df.iloc[i]['r_pos'] < contig_df.iloc[check_down]['r_end'] and contig_df.iloc[i]['r_pos'] > contig_df.iloc[check_down]['r_end']) or (contig_df.iloc[i]['r_pos'] < contig_df.iloc[check_up]['r_end'] and contig_df.iloc[i]['r_pos'] > contig_df.iloc[check_up]['r_end']):
-							df.at[index, 'TRANS'] = 'SYN-DUP'
+						elif (contig_df.iloc[i][dir_dict[wildcards.direct]['r_pos']] < contig_df.iloc[check_down][dir_dict[wildcards.direct]['r_end']] and contig_df.iloc[i][dir_dict[wildcards.direct]['r_pos']] > contig_df.iloc[check_down][dir_dict[wildcards.direct]['r_end']]) or (contig_df.iloc[i][dir_dict[wildcards.direct]['r_pos']] < contig_df.iloc[check_up][dir_dict[wildcards.direct]['r_end']] and contig_df.iloc[i][dir_dict[wildcards.direct]['r_pos']] > contig_df.iloc[check_up][dir_dict[wildcards.direct]['r_end']]):
+							df.at[index, f'TRANS_{wildcards.direct}'] = 'SYN-DUP'
 							prev_inter = False
 							last_trans = False
 							last_syn_id = i
 						else:
-							gap_bed = BedTool.from_dataframe(pd.DataFrame.from_dict({'#chr' : [contig_chr], 'start' : [min(contig_df.iloc[i]['r_pos'], start_pred)], 'end' : [max(contig_df.iloc[i]['r_pos'], start_pred)]}))
+							gap_bed = BedTool.from_dataframe(pd.DataFrame.from_dict({'#chr' : [contig_chr], 'start' : [min(contig_df.iloc[i][dir_dict[wildcards.direct]['r_pos']], start_pred)], 'end' : [max(contig_df.iloc[i][dir_dict[wildcards.direct]['r_pos']], start_pred)]}))
 							cov_df = gap_bed.coverage(sv_bed).to_dataframe(names=['#chr', 'start', 'end', 'events', 'bases', 'len', 'perc'])
 							if cov_df.iloc[0]['perc'] > .90:
-								df.at[index, 'TRANS'] = 'SYNTENIC'
+								df.at[index, f'TRANS_{wildcards.direct}'] = 'SYNTENIC'
 								prev_inter = False
 								last_trans = False
 								last_syn_id = i
 							else:
-								df.at[index, 'TRANS'] = 'TRANSPOSE'
+								df.at[index, f'TRANS_{wildcards.direct}'] = 'TRANSPOSE'
 								last_trans = True
 								prev_inter = False
 								trans_len = df.at[index, 'alen']
+		df.to_csv(output.trans, sep='\t', index=False)
+
+
+rule combine_trans_search:
+	input:
+		forward = 'tmp/{sample}_transp-for.bed',
+		rev = 'tmp/{sample}_transp-rev.bed'
+	output:
+		trans = 'tmp/{sample}_transp.bed'
+	threads: 1
+	resources: 
+		mem = 8,
+		hrs = 24
+	run:
+		df = pd.merge(pd.read_csv(input.forward, sep='\t'), pd.read_csv(input.rev, sep='\t'))
+
+		df['TRANS'] = df.apply(lambda row: 'SYNTENIC' if 'SYNTENIC' in [row['TRANS_for'], row['TRANS_rev']] else row['TRANS_for'], axis=1)
 
 		df['SVLEN'] = df['alen']
 		df['SVTYPE'] = df['TRANS']
@@ -396,7 +420,6 @@ rule call_transposition:
 		df = df.rename(columns={'r_chr' : '#CHROM', 'r_pos' : 'POS', 'r_end' : 'END', 'q_chr' : 'CONTIG'})
 
 		df.loc[(df['TRANS'] != 'SYNTENIC') & (df['TRANS'] != 'EDGE') & (df['TRANS'] != 'SMALL_CTG')][['#CHROM', 'POS', 'END', 'SVTYPE', 'SVLEN', 'ID', 'CONTIG_SEQ']].to_csv(output.trans, sep='\t', index=False)
-
 
 rule call_from_gaps:
 	input:
@@ -436,7 +459,10 @@ rule call_from_gaps:
 				df.at[index, 'GAP_STATUS'] = 'COMPLEX_ALIGNMENT'
 				df.at[index, 'CONTIG_LEN'] = 0
 			else:
-				df.at[index, 'CONTIG_LEN'] = contig_chr.iloc[1]['q_pos'] - contig_chr.iloc[0]['q_end']
+				q_start = contig_chr.iloc[0]['q_end']
+				q_end = contig_chr.iloc[1]['q_pos']
+				mid_bases = contig_df.loc[(contig_df['q_end'] <= q_end) & (contig_df['q_pos'] >= q_start)]
+				df.at[index, 'CONTIG_LEN'] = q_end - q_start - q_end		
 				df.at[index, 'q_end'] = contig_chr.iloc[1][strand_dict_end[contig_chr.iloc[1]['strand']]]
 				df.at[index, 'q_pos'] = contig_chr.iloc[0][strand_dict_pos[contig_chr.iloc[0]['strand']]]
 				df.at[index, 'q_chr'] = contig_chr.iloc[0]['q_chr']
