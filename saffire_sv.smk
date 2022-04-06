@@ -649,7 +649,7 @@ rule bed9:
 		df = pd.read_csv(input.bed, sep='\t')
 		color_dict = {'DEL' : '220,0,0', 'DUP' : '0,0,220', 'INTER' : '0,220,0', 'INV' : '220,140,0', 'TRANSPOSE' : '128,0,128'}
 		df['COLOR'] = df['SVTYPE_MERGE'].apply(lambda x : color_dict[x])
-		df['BED_END'] = df.apply(lambda row: row['END']+row['SVLEN'] if row['SVTYPE_MERGE'] == 'DUP' else row['END'], axis=1)
+		df['BED_END'] = df.apply(lambda row: row['END']+row['SVLEN'] if row['END']-row['POS'] == 1 else row['END'], axis=1)
 		df['SCORE'] = '0'
 		df['STRAND'] = '+'
 		df[['#CHROM', 'POS', 'BED_END', 'ID_MERGE', 'SCORE', 'STRAND', 'SCORE', 'SCORE', 'COLOR']].sort_values(['#CHROM', 'POS']).to_csv(output.bed, sep='\t', header=['#ct','st','en','name','score','strand','tst','ten','color'], index=False)
