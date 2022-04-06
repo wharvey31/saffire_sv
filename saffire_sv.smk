@@ -187,7 +187,7 @@ rule call_simple_insdel:
 			ins_uniq_end = broken_df[['r_chr', 'r_pos', 'q_chr', 'q_pos', 'strand']].merge(ins_df[['q_chr', 'q_pos', 'ins_index', 'SVLEN']]).groupby(['q_chr', 'q_pos', 'ins_index', 'SVLEN', 'r_chr', 'r_pos']).count().reset_index()[['q_chr', 'q_pos', 'ins_index', 'SVLEN', 'r_pos', 'r_chr', 'strand']]
 			ins_uniq_end = ins_uniq_end.loc[ins_uniq_end['strand'] == 1]
 			ins_ref_locs = ins_uniq_end.merge(ins_uniq_start)
-			ins_ref_locs['SVTYPE'] = 'INS'
+			ins_ref_locs['SVTYPE'] = 'DUP'
 			ins_ref_locs['r_end'] = ins_ref_locs['r_end']+1
 		else:
 			ins_ref_locs = pd.DataFrame(columns=['SVLEN', 'SVTYPE', 'r_chr', 'r_pos', 'r_end', 'q_chr', 'q_pos', 'q_end'])
@@ -469,7 +469,7 @@ rule call_from_gaps:
 				if df.at[index, 'CONTIG_LEN'] < df.at[index, 'GAP_LEN']:
 					df.at[index, 'GAP_STATUS'] = 'DEL_GAP'
 				elif df.at[index, 'CONTIG_LEN'] > df.at[index, 'GAP_LEN']:
-					df.at[index, 'GAP_STATUS'] = 'INS_GAP'
+					df.at[index, 'GAP_STATUS'] = 'DUP_GAP'
 				else:
 					df.at[index, 'GAP_STATUS'] = 'GAP_NONSYN'
 
@@ -557,7 +557,7 @@ rule var_join:
 		# Only call variants in contigs > 1Mbp
 		broken_df = broken_df.loc[broken_df['q_len'] > 1000000]
 
-		merge_pairs = {'DEL' : ['DEL', 'DEL_GAP'], 'INS' : ['INS_GAP', 'INS'], 'INS_GAP' : ['INS_GAP', 'INS'], 'DEL_GAP' : ['DEL', 'DEL_GAP'], 'TRANSPOSE' : ['TRANSPOSE'], 'INTER' : ['INTER'], 'INV' : ['INV'], 'DUP' : ['DUP']}
+		merge_pairs = {'DEL' : ['DEL', 'DEL_GAP'], 'DUP' : ['DUP_GAP', 'DUP'], 'DUP_GAP' : ['DUP_GAP', 'DUP'], 'DEL_GAP' : ['DEL', 'DEL_GAP'], 'TRANSPOSE' : ['TRANSPOSE'], 'INTER' : ['INTER'], 'INV' : ['INV'], 'DUP' : ['DUP']}
 
 		df = df.sort_values(['#CHROM', 'POS'])
 
@@ -646,9 +646,9 @@ rule bed9:
 		hrs = 24
 	run:
 		df = pd.read_csv(input.bed, sep='\t')
-		color_dict = {'DEL' : '220,0,0', 'DUP' : '0,220,220', 'INS' : '0,0,220', 'INTER' : '0,220,0', 'INV' : '220,140,0', 'TRANSPOSE' : '128,0,128'}
+		color_dict = {'DEL' : '220,0,0', 'DUP' : '0,0,220', 'INTER' : '0,220,0', 'INV' : '220,140,0', 'TRANSPOSE' : '128,0,128'}
 		df['COLOR'] = df['SVTYPE_MERGE'].apply(lambda x : color_dict[x])
-		df['BED_END'] = df.apply(lambda row: row['END']+row['SVLEN'] if row['SVTYPE_MERGE'] == 'INS' else row['END'], axis=1)
+		df['BED_END'] = df.apply(lambda row: row['END']+row['SVLEN'] if row['SVTYPE_MERGE'] == 'DUP' else row['END'], axis=1)
 		df['SCORE'] = '0'
 		df['STRAND'] = '+'
 		df[['#CHROM', 'POS', 'BED_END', 'ID_MERGE', 'SCORE', 'STRAND', 'SCORE', 'SCORE', 'COLOR']].sort_values(['#CHROM', 'POS']).to_csv(output.bed, sep='\t', header=['#ct','st','en','name','score','strand','tst','ten','color'], index=False)
