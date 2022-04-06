@@ -463,7 +463,7 @@ rule call_from_gaps:
 				q_end = contig_chr.iloc[1]['q_pos']
 				mid_bases_df = contig_df.loc[(contig_df['q_end'] <= q_end) & (contig_df['q_pos'] >= q_start)]
 				mid_bases = np.sum(mid_bases_df['q_end'] - mid_bases_df['q_pos'])
-				df.at[index, 'CONTIG_LEN'] = q_end - q_start - q_end		
+				df.at[index, 'CONTIG_LEN'] = q_end - q_start - mid_bases		
 				df.at[index, 'q_end'] = contig_chr.iloc[1][strand_dict_end[contig_chr.iloc[1]['strand']]]
 				df.at[index, 'q_pos'] = contig_chr.iloc[0][strand_dict_pos[contig_chr.iloc[0]['strand']]]
 				df.at[index, 'q_chr'] = contig_chr.iloc[0]['q_chr']
