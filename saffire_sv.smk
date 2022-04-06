@@ -419,7 +419,7 @@ rule combine_trans_search:
 
 		df = df.rename(columns={'r_chr' : '#CHROM', 'r_pos' : 'POS', 'r_end' : 'END', 'q_chr' : 'CONTIG'})
 
-		df.loc[(df['TRANS'] != 'SYNTENIC') & (df['TRANS'] != 'EDGE') & (df['TRANS'] != 'SMALL_CTG')][['#CHROM', 'POS', 'END', 'SVTYPE', 'SVLEN', 'ID', 'CONTIG_SEQ']].to_csv(output.trans, sep='\t', index=False)
+		df.loc[(df['TRANS'] != 'SYNTENIC') & (df['TRANS'] != 'EDGE') & (df['TRANS'] != 'INV') & (df['TRANS'] != 'SMALL_CTG')][['#CHROM', 'POS', 'END', 'SVTYPE', 'SVLEN', 'ID', 'CONTIG_SEQ']].to_csv(output.trans, sep='\t', index=False)
 
 rule call_from_gaps:
 	input:
