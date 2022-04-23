@@ -572,7 +572,8 @@ rule var_join:
 
 
 		for i in range(len(df)):
-			merge_dict[i] = []
+			if i not in merge_dict:
+				merge_dict[i] = []
 			if i == len(df)-1:
 				continue
 			elif df.iloc[i+1]['#CHROM'] != chrom:
@@ -608,7 +609,7 @@ rule var_join:
 			if len(node) == 1:
 				merge_df = merge_df.append(df.iloc[list(node)[0]])
 			else:
-				merges = df.iloc[min(node):max(node)].copy()
+				merges = df.iloc[min(node):max(node)+1].copy()
 				sv_start = min(merges['POS'])
 				sv_chrom = merges.iloc[0]['#CHROM']
 				sv_end = max(merges['END'])
