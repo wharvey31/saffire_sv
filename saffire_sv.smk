@@ -60,6 +60,14 @@ def find_paf(wildcards):
 def find_contigs(wildcards):
 	return gather.split('tmp/{sample}.{scatteritem}-{status}.paf', sample=wildcards.sample, status=wildcards.status)
 
+def trans_merge(synblock):
+	if 'SYNTENIC' in synblock:
+		return 'SYNTENIC'
+	elif 'TRANSPOSE_INV' in synblock:
+		return 'TRANSPOSE_INV'
+	else:
+		return synblock[0]
+
 scattergather:
     split=PARTS
 
@@ -241,7 +249,7 @@ rule call_inv:
 
 		df = df.loc[df['q_len'] > 1000000].sort_values(['q_chr', 'q_pos', 'r_pos']).reset_index(drop=True)
 
-		df_inv = df.loc[(df['strand'] == '-') & (df['r_end'] - df['r_pos'] > 30000)].copy()
+		df_inv = df.loc[(df['strand'] == '-')].copy()
 
 		for inv_index in range(len(df_inv)):
 			orig_index = df_inv.iloc[inv_index].name
@@ -316,11 +324,14 @@ rule call_transposition:
 
 		sv_bed = BedTool.from_dataframe(sv_df[['#CHROM', 'POS', 'END']].append(gap_df))
 
+		inv_bed = BedTool.from_dataframe(pd.read_csv(input.inv, sep='\t'))
+
 		for contig in df['q_chr'].unique():
 			last_trans = False
 			trans_len = 0
 			last_syn_id = 0
 			prev_inter = False
+			# contig_df = df.loc[df['q_chr'] == contig].sort_values(['q_pos'], ascending=sort_dict[wildcards.direct]).copy()
 			contig_df = df.loc[df['q_chr'] == contig].sort_values(['q_pos'], ascending=sort_dict[wildcards.direct]).copy()
 			contig_chr = contig_df.groupby('r_chr').sum().reset_index().sort_values(['alen'], ascending=False).iloc[0]['r_chr']
 			for i, index in enumerate(contig_df.index):
@@ -384,16 +395,24 @@ rule call_transposition:
 						else:
 							gap_bed = BedTool.from_dataframe(pd.DataFrame.from_dict({'#chr' : [contig_chr], 'start' : [min(contig_df.iloc[i][dir_dict[wildcards.direct]['r_pos']], start_pred)], 'end' : [max(contig_df.iloc[i][dir_dict[wildcards.direct]['r_pos']], start_pred)]}))
 							cov_df = gap_bed.coverage(sv_bed).to_dataframe(names=['#chr', 'start', 'end', 'events', 'bases', 'len', 'perc'])
-							if cov_df.iloc[0]['perc'] > .90:
-								df.at[index, f'TRANS_{wildcards.direct}'] = 'SYNTENIC'
-								prev_inter = False
-								last_trans = False
-								last_syn_id = i
+							if cov_df.iloc[0]['perc'] > 0.90:
+								inv_cov = gap_bed.coverage(inv_bed).to_dataframe(names=['#chr', 'start', 'end', 'events', 'bases', 'len', 'perc'])
+								if inv_cov.iloc[0]['perc'] > 0.50:
+									df.at[index, f'TRANS_{wildcards.direct}'] = 'TRANSPOSE_INV'
+									prev_inter = False
+									last_syn = False
+									trans_len = df.at[index, 'alen']
+								else:
+									df.at[index, f'TRANS_{wildcards.direct}'] = 'SYNTENIC'
+									prev_inter = False
+									last_trans = False
+									last_syn_id = i
 							else:
 								df.at[index, f'TRANS_{wildcards.direct}'] = 'TRANSPOSE'
 								last_trans = True
 								prev_inter = False
 								trans_len = df.at[index, 'alen']
+
 		df.to_csv(output.trans, sep='\t', index=False)
 
 
@@ -410,7 +429,7 @@ rule combine_trans_search:
 	run:
 		df = pd.merge(pd.read_csv(input.forward, sep='\t'), pd.read_csv(input.rev, sep='\t'))
 
-		df['TRANS'] = df.apply(lambda row: 'SYNTENIC' if 'SYNTENIC' in [row['TRANS_for'], row['TRANS_rev']] else row['TRANS_for'], axis=1)
+		df['TRANS'] = df.apply(lambda row: trans_merge([row['TRANS_for'], row['TRANS_rev']]), axis=1)
 
 		df['SVLEN'] = df['alen']
 		df['SVTYPE'] = df['TRANS']
@@ -451,7 +470,7 @@ rule call_from_gaps:
 			chrom = df.at[index, '#CHROM']
 			gap_start = max(0, df.at[index, 'POS']-50)
 			gap_end = df.at[index, 'END']+50
-			contig_chr = contig_df.loc[(contig_df['r_chr'] == chrom) & (((contig_df['r_end'] >= gap_start) & (contig_df['r_end'] <= gap_end)) | ((contig_df['r_pos'] >= gap_start) & (contig_df['r_pos'] <= gap_end)))].copy().sort_values('r_pos')
+			contig_chr = contig_df.loc[(contig_df['r_chr'] == chrom) & (((contig_df['r_end'] >= gap_start) & (contig_df['r_end'] <= gap_end)) | ((contig_df['r_pos'] >= gap_start) & (contig_df['r_pos'] <= gap_end)))].copy().sort_values('q_pos')
 			if len(contig_chr) < 2 or len(contig_chr['q_chr'].unique()) > 1:
 				df.at[index, 'GAP_STATUS'] = 'GAP'
 				df.at[index, 'CONTIG_LEN'] = 0
@@ -461,7 +480,7 @@ rule call_from_gaps:
 			else:
 				q_start = contig_chr.iloc[0]['q_end']
 				q_end = contig_chr.iloc[1]['q_pos']
-				mid_bases_df = contig_df.loc[(contig_df['q_end'] <= q_end) & (contig_df['q_pos'] >= q_start)]
+				mid_bases_df = contig_df.loc[((contig_df['q_end'] <= q_end) & (contig_df['q_pos'] >= q_start)) & (contig_df['q_chr'] == contig_chr['q_chr'].unique()[0])]
 				mid_bases = np.sum(mid_bases_df['q_end'] - mid_bases_df['q_pos'])
 				df.at[index, 'CONTIG_LEN'] = q_end - q_start - mid_bases		
 				df.at[index, 'q_end'] = contig_chr.iloc[1][strand_dict_end[contig_chr.iloc[1]['strand']]]
@@ -542,7 +561,7 @@ rule combine_calls:
 
 
 
-rule var_join:
+rule inv_join:
 	input:
 		bed = rules.combine_calls.output.bed,
 		broken = 'tmp/{sample}-broken.paf'
@@ -557,20 +576,12 @@ rule var_join:
 		broken_df = pd.read_csv(input.broken, sep='\t', header=None, usecols=[0,1,2,3,4,5,7,8], names=['q_chr', 'q_len', 'q_pos', 'q_end', 'strand', 'r_chr', 'r_pos', 'r_end'])
 		# Only call variants in contigs > 1Mbp
 		broken_df = broken_df.loc[broken_df['q_len'] > 1000000]
-
-		merge_pairs = {'DEL' : ['DEL', 'DEL_GAP'], 'DUP' : ['DUP_GAP', 'DUP'], 'DUP_GAP' : ['DUP_GAP', 'DUP'], 'DEL_GAP' : ['DEL', 'DEL_GAP'], 'TRANSPOSE' : ['TRANSPOSE'], 'INTER' : ['INTER'], 'INV' : ['INV'], 'DUP' : ['DUP']}
-
+		merge_pairs = {'DEL' : ['DEL', 'DEL_GAP'], 'DUP' : ['DUP_GAP', 'DUP'], 'DUP_GAP' : ['DUP_GAP', 'DUP'], 'DEL_GAP' : ['DEL', 'DEL_GAP'], 'TRANSPOSE' : ['TRANSPOSE'], 'TRANSPOSE_INV' : ['TRANSPOSE_INV', 'INV'], 'INTER' : ['INTER'], 'INV' : ['INV', 'TRANSPOSE_INV'], 'DUP' : ['DUP']}
 		df = df.sort_values(['#CHROM', 'POS'])
-
 		gap_df = pd.DataFrame()
-
 		chrom = df.iloc[0]['#CHROM']
-
 		broken_bed = BedTool.from_dataframe(broken_df[['r_chr', 'r_pos', 'r_end']])
-
 		merge_dict = {}
-
-
 		for i in range(len(df)):
 			if i not in merge_dict:
 				merge_dict[i] = []
@@ -590,6 +601,127 @@ rule var_join:
 						merge_dict = merge_cat(merge_dict, i)
 
 		# gap_df['LEN_GAP'] = gap_df['END'] - gap_df['POS']
+		for i in merge_dict:
+			merge_dict[i].sort()
+
+		g = nx.DiGraph()
+		g.add_nodes_from(merge_dict.keys())
+		for k, v in merge_dict.items():
+			g.add_edges_from(([(k, t) for t in v]))
+
+		UG = g.to_undirected()
+
+		sub_graphs = sorted(nx.connected_components(UG), key = len, reverse=True)
+
+		merge_df = pd.DataFrame()
+
+		for node in sub_graphs:
+			if len(node) == 1:
+				merge_df = merge_df.append(df.iloc[list(node)[0]])
+			else:
+				merges = df.iloc[min(node):max(node)].copy()
+				sv_start = min(merges['POS'])
+				sv_chrom = merges.iloc[0]['#CHROM']
+				if merges['SVTYPE'].unique()[0] == 'INV':
+					if merges['SVTYPE'].unique()[0] != 'DUP':
+						sv_end = max(merges['END'])
+					else:
+						sv_end = sv_start+1
+					merges['SVTYPE'] = merges['SVTYPE'].str.replace('_GAP', '').str.replace('TRANSPOSE_INV', 'INV')
+					if len(merges['SVTYPE'].unique()) == 1:
+						sv_type = merges['SVTYPE'].unique()[0]
+						sv_merge_type = merges['SVTYPE'].unique()[0]
+					else:
+						sv_type = 'COMPLEX'
+						sv_merge_type = ";".join(merges['SVTYPE'].unique())
+					sv_merge_id = ";".join(merges['ID'])
+					sv_len = np.sum(merges['SVLEN'])
+					sv_merge_contig = ";".join(merges['CONTIG_SEQ'])
+					merges['contig'] = merges['CONTIG_SEQ'].str.split(':', expand=True)[0].iloc[0]
+					merges['contig_pos'] = min(merges['CONTIG_SEQ'].str.split(':', expand=True)[1].str.split('-', expand=True)[0].astype(int))
+					merges['contig_end'] = max(merges['CONTIG_SEQ'].str.split(':', expand=True)[1].str.split('-', expand=True)[1].astype(int))
+					sv_merge_contig = f"{merges['contig'].iloc[0]}:{merges['contig_pos'].iloc[0]}-{merges['contig_end'].iloc[0]}"
+					sv_id = f'{sv_chrom}-{sv_start}-{sv_type}-{sv_len}'
+					merge_df = merge_df.append(pd.DataFrame.from_dict({'#CHROM' : [sv_chrom], 'POS' : [sv_start], 'END' : [sv_end], 'SVTYPE' : [sv_type], 'SVTYPE_MERGE' : [sv_merge_type], 'ID' : [sv_id], 'SVLEN' : [sv_len], 'ID_MERGE' : [sv_merge_id], 'CONTIG_SEQ_MERGE' : [sv_merge_contig]}))
+				else:
+					merge_df = merge_df.append(merges)
+		try:
+			merge_df['SVTYPE_MERGE']
+		except:
+			merge_df['SVTYPE_MERGE'] == 'SINGLE'
+
+		merge_df = merge_df.fillna('SINGLE')
+		merge_df['SVTYPE'] = merge_df['SVTYPE'].str.replace('_GAP', '')
+
+		merge_df['SVTYPE_MERGE'] = merge_df.apply(lambda row: row['SVTYPE'] if row['SVTYPE_MERGE'] == 'SINGLE' else row['SVTYPE_MERGE'], axis=1)
+		merge_df['ID_MERGE'] = merge_df.apply(lambda row: row['ID'] if row['ID_MERGE'] == 'SINGLE' else row['ID_MERGE'], axis=1)
+		merge_df['CONTIG_SEQ_MERGE'] = merge_df.apply(lambda row: row['CONTIG_SEQ'] if row['CONTIG_SEQ_MERGE'] == 'SINGLE' else row['CONTIG_SEQ_MERGE'], axis=1)
+
+		merge_df[['#CHROM','POS', 'END', 'SVTYPE_MERGE', 'SVLEN', 'ID_MERGE', 'CONTIG_SEQ_MERGE']].sort_values(['#CHROM', 'POS']).to_csv(output.bed, index=False, sep='\t')
+
+rule var_clean_anno:
+	input:
+		bed = rules.inv_join.output.bed
+	output:
+		bed = 'results/clean/{sample}/{sample}_var_all.bed'
+	threads: 1
+	resources:
+		mem = 8,
+		hrs = 24
+	run:
+		df = pd.read_csv(input.bed, sep='\t')
+		# Handle inversion merging
+
+		inv_df = df.loc[df['SVTYPE_MERGE'].str.contains('INV')]
+
+		inv_df_bed = BedTool.from_dataframe(inv_df[['#CHROM', 'POS', 'END', 'ID_MERGE']])
+
+		inv_bed_int = inv_df_bed.intersect(inv_df_bed, wa=True, wb=True).to_dataframe(names=['#CHROM', 'POS', 'END', 'ID', '#CHROM_INT', 'POS_INT', 'END_INT', 'ID_INT'])
+
+		inv_bed_int = inv_bed_int.loc[inv_bed_int['ID'] != inv_bed_int['ID_INT']]
+
+
+		merge_dict = {}
+
+
+		for i in inv_bed_int.index:
+			merge_start = df.loc[df['ID_MERGE'] == inv_bed_int.at[i, 'ID']].index[0]
+			merge_partner = df.loc[df['ID_MERGE'] == inv_bed_int.at[i, 'ID_INT']].index[0]
+			if merge_start not in merge_dict:
+				merge_dict[merge_start] = []
+			if merge_partner not in merge_dict:
+				merge_dict[merge_partner] = []
+			if merge_partner not in merge_dict[merge_start]:
+				merge_dict[merge_start].append(merge_partner)
+			if merge_start not in merge_dict[merge_partner]:
+				merge_dict[merge_partner].append(merge_start)
+
+
+
+		inv_df['contig'] = inv_df['CONTIG_SEQ_MERGE'].str.split(':', expand=True)[0]
+		inv_df['contig_pos'] = inv_df['CONTIG_SEQ_MERGE'].str.split(':', expand=True)[1].str.split('-', expand=True)[0]
+		inv_df['contig_end'] = inv_df['CONTIG_SEQ_MERGE'].str.split(':', expand=True)[1].str.split('-', expand=True)[1]
+
+
+		inv_df_contig_merge = inv_df.merge(inv_df, left_on=['#CHROM', 'contig', 'contig_pos'], right_on=['#CHROM', 'contig', 'contig_end'], suffixes=['', '_INT'])
+
+		for i in inv_df_contig_merge.index:
+			merge_start = df.loc[df['ID_MERGE'] == inv_df_contig_merge.at[i, 'ID_MERGE']].index[0]
+			merge_partner = df.loc[df['ID_MERGE'] == inv_df_contig_merge.at[i, 'ID_MERGE_INT']].index[0]
+			if merge_start not in merge_dict:
+				merge_dict[merge_start] = []
+			if merge_partner not in merge_dict:
+				merge_dict[merge_partner] = []
+			if merge_partner not in merge_dict[merge_start]:
+				merge_dict[merge_start].append(merge_partner)
+			if merge_start not in merge_dict[merge_partner]:
+				merge_dict[merge_partner].append(merge_start)
+
+
+		for index in inv_df.index:
+			if index not in merge_dict:
+				merge_dict[index] = []
+
 
 		for i in merge_dict:
 			merge_dict[i].sort()
@@ -609,37 +741,102 @@ rule var_join:
 			if len(node) == 1:
 				merge_df = merge_df.append(df.iloc[list(node)[0]])
 			else:
-				merges = df.iloc[min(node):max(node)+1].copy()
+				merges = df.iloc[list(node)].copy()
 				sv_start = min(merges['POS'])
 				sv_chrom = merges.iloc[0]['#CHROM']
 				sv_end = max(merges['END'])
-				merges['SVTYPE'] = merges['SVTYPE'].str.replace('_GAP', '')
-				if len(merges['SVTYPE'].unique()) == 1:
-					sv_type = merges['SVTYPE'].unique()[0]
-					sv_merge_type = merges['SVTYPE'].unique()[0]
-				else:
-					sv_type = 'COMPLEX'
-					sv_merge_type = ";".join(merges['SVTYPE'].unique())
-				sv_merge_id = ";".join(merges['ID'])
+				sv_merge_id = ";".join(merges['ID_MERGE'])
 				sv_len = np.sum(merges['SVLEN'])
-				sv_merge_contig = ";".join(merges['CONTIG_SEQ'])
-				sv_id = f'{sv_chrom}-{sv_start}-{sv_type}-{sv_len}'
-				merge_df = merge_df.append(pd.DataFrame.from_dict({'#CHROM' : [sv_chrom], 'POS' : [sv_start], 'END' : [sv_end], 'SVTYPE' : [sv_type], 'SVTYPE_MERGE' : [sv_merge_type], 'ID' : [sv_id], 'SVLEN' : [sv_len], 'ID_MERGE' : [sv_merge_id], 'CONTIG_SEQ_MERGE' : [sv_merge_contig]}))
+				sv_merge_contig = ";".join(merges['CONTIG_SEQ_MERGE'])
+				merges['contig'] = merges['CONTIG_SEQ_MERGE'].str.split(':', expand=True)[0].iloc[0]
+				merges['contig_pos'] = min(merges['CONTIG_SEQ_MERGE'].str.split(':', expand=True)[1].str.split('-', expand=True)[0].astype(int))
+				merges['contig_end'] = max(merges['CONTIG_SEQ_MERGE'].str.split(':', expand=True)[1].str.split('-', expand=True)[1].astype(int))
+				sv_merge_contig = f"{merges['contig'].iloc[0]}:{merges['contig_pos'].iloc[0]}-{merges['contig_end'].iloc[0]}"
+				sv_id = f'{sv_chrom}-{sv_start}-INV-{sv_len}'
+				merge_df = merge_df.append(pd.DataFrame.from_dict({'#CHROM' : [sv_chrom], 'POS' : [sv_start], 'END' : [sv_end], 'SVTYPE' : [','.join(merges['SVTYPE_MERGE'].unique())], 'SVTYPE_MERGE' : ['INV'], 'ID_MERGE' : [sv_id], 'SVLEN' : [sv_len], 'ID' : [sv_merge_id], 'CONTIG_SEQ_MERGE' : [sv_merge_contig]}))
 
-		merge_df = merge_df.fillna('SINGLE')
-		merge_df['SVTYPE'] = merge_df['SVTYPE'].str.replace('_GAP', '')
+		merge_df['INV_ANNO'] = merge_df.fillna('').apply(lambda row: 'COMPLEX' if 'TRANS' in row['SVTYPE'] else '', axis=1)
 
-		merge_df['SVTYPE_MERGE'] = merge_df.apply(lambda row: row['SVTYPE'] if row['SVTYPE_MERGE'] == 'SINGLE' else row['SVTYPE_MERGE'], axis=1)
-		merge_df['ID_MERGE'] = merge_df.apply(lambda row: row['ID'] if row['ID_MERGE'] == 'SINGLE' else row['ID_MERGE'], axis=1)
-		merge_df['CONTIG_SEQ_MERGE'] = merge_df.apply(lambda row: row['CONTIG_SEQ'] if row['CONTIG_SEQ_MERGE'] == 'SINGLE' else row['CONTIG_SEQ_MERGE'], axis=1)
+		df = df.loc[~df['SVTYPE_MERGE'].str.contains('INV')].append(merge_df[['#CHROM', 'POS', 'END', 'SVTYPE_MERGE', 'SVLEN', 'ID_MERGE','CONTIG_SEQ_MERGE', 'INV_ANNO']]).sort_values(['#CHROM', 'POS']).fillna('')
 
+		bed_df = BedTool.from_dataframe(df[['#CHROM','POS', 'END', 'SVTYPE_MERGE', 'ID_MERGE']])
 
-		merge_df[['#CHROM','POS', 'END', 'SVTYPE_MERGE', 'SVLEN', 'ID_MERGE', 'CONTIG_SEQ_MERGE']].sort_values(['#CHROM', 'POS']).to_csv(output.bed, index=False, sep='\t')
+		int_df = bed_df.intersect(bed_df, f=0.9, wa=True, wb=True, r=True).to_dataframe(names=['#CHROM','POS', 'END', 'SVTYPE_MERGE', 'ID_MERGE', '#CHROM_INT','POS_INT', 'END_INT', 'SVTYPE_MERGE_INT', 'ID_MERGE_INT'])
+		# Drop duplicative transpositions
+		trans_dup = int_df.loc[(int_df['SVTYPE_MERGE'] == 'TRANSPOSE') & (int_df['SVTYPE_MERGE_INT'] == 'DUP')]['ID_MERGE'].unique()
+
+		trans_dup_anno = int_df.loc[(int_df['SVTYPE_MERGE'] == 'DUP') & (int_df['SVTYPE_MERGE_INT'] == 'TRANSPOSE')]['ID_MERGE'].unique()
+
+		df = df.set_index('ID_MERGE').drop(trans_dup).reset_index()
+
+		trans_dup_anno_df = df.set_index('ID_MERGE').loc[trans_dup_anno].reset_index()
+
+		trans_dup_anno_df['TRANS-DUP-ANNO'] = 'TRANS-DUP'
+
+		inv_dup = int_df.loc[(int_df['SVTYPE_MERGE'] == 'DUP') & (int_df['SVTYPE_MERGE_INT'] == 'INV')]['ID_MERGE'].unique()
+
+		inv_dup_anno = int_df.loc[(int_df['SVTYPE_MERGE'] == 'INV') & (int_df['SVTYPE_MERGE_INT'] == 'DUP')]['ID_MERGE'].unique()
+
+		df = df.set_index('ID_MERGE').drop(inv_dup).reset_index()
+
+		inv_dup_anno_df = df.set_index('ID_MERGE').loc[inv_dup_anno].reset_index()
+
+		inv_dup_anno_df['INV-DUP-ANNO'] = 'INV-DUP'
+
+		df = df.merge(inv_dup_anno_df[['ID_MERGE', 'INV-DUP-ANNO']].append(trans_dup_anno_df[['ID_MERGE', 'TRANS-DUP-ANNO']]), how='left').fillna('')
+
+		# Space for removing NAHR
+
+		bed_df = BedTool.from_dataframe(df.loc[(df['INV-DUP-ANNO'] == '') & (df['TRANS-DUP-ANNO'] == '')][['#CHROM','POS', 'END', 'SVTYPE_MERGE', 'ID_MERGE', 'SVLEN']])
+
+		inv_df = df.loc[df['SVTYPE_MERGE'] == 'INV']
+
+		inv_df_bed = BedTool.from_dataframe(inv_df[['#CHROM','POS', 'END', 'SVTYPE_MERGE', 'ID_MERGE']])
+
+		int_df = inv_df_bed.intersect(bed_df, wa=True, wb=True).to_dataframe(names=['#CHROM','POS', 'END', 'SVTYPE_MERGE', 'ID_MERGE', '#CHROM_INT','POS_INT', 'END_INT', 'SVTYPE_MERGE_INT', 'ID_MERGE_INT', 'SVLEN_INT'])
+
+		int_df = int_df.loc[(int_df['ID_MERGE'] != int_df['ID_MERGE_INT']) & ((int_df['SVTYPE_MERGE_INT'] == 'DUP') | (int_df['SVTYPE_MERGE_INT'] == 'DEL'))]
+
+		int_df['browse'] = int_df['browse'] = int_df['#CHROM']+":"+int_df['POS'].astype(str)+"-"+int_df['END'].astype(str)
+
+		# df = df.reset_index()
+
+		check_dict = {'DEL' : 'DUP', 'DUP' : 'DEL'}
+
+		drop_list = []
+
+		for index in int_df.index:
+			nahr_check = int_df.loc[index][['#CHROM', 'POS', 'END', 'SVTYPE_MERGE', 'ID_MERGE']]
+			nahr_var_id = int_df.at[index, 'ID_MERGE_INT']
+			nahr_var_type = int_df.at[index, 'SVTYPE_MERGE_INT']
+			nahr_var_len = int_df.at[index, 'SVLEN_INT']
+			nahr_check['POS'] = nahr_check['POS']-100
+			nahr_check['END'] = nahr_check['END']+100
+			nahr_int = BedTool.from_dataframe(pd.DataFrame(nahr_check[['#CHROM', 'POS', 'END', 'SVTYPE_MERGE', 'ID_MERGE']]).T).intersect(BedTool.from_dataframe(df.loc[(df['INV-DUP-ANNO'] == '') & (df['TRANS-DUP-ANNO'] == '')][['#CHROM','POS', 'END', 'SVTYPE_MERGE', 'ID_MERGE', 'SVLEN']]), wa=True, wb=True).to_dataframe(names=['#CHROM','POS', 'END', 'SVTYPE_MERGE', 'ID_MERGE', '#CHROM_INT','POS_INT', 'END_INT', 'SVTYPE_MERGE_INT', 'ID_MERGE_INT', 'SVLEN_INT'])
+			nahr_int = nahr_int[nahr_int['ID_MERGE_INT'] != nahr_int['ID_MERGE']]
+			nahr_pair = nahr_int.loc[(nahr_int['SVTYPE_MERGE_INT'] == check_dict[nahr_var_type]) & (np.abs((nahr_int['SVLEN_INT']/nahr_var_len) - 1) < 0.05)]
+			if len(nahr_pair) == 1:
+				drop_list.append(nahr_var_id)
+				drop_list.append(nahr_pair.iloc[0]['ID_MERGE_INT'])
+				int_df.at[index, 'NAHR_ANNO'] = 'NAHR'
+			if len(nahr_pair) == 0 and (np.abs(nahr_var_len-30000) < 10000) & len(int_df.loc[int_df['ID_MERGE'] == int_df.at[index, 'ID_MERGE']]) == 1:
+				drop_list.append(nahr_var_id)
+				int_df.at[index, 'NAHR_ANNO'] = 'NAHR'
+			else:
+				continue
+
+		df = df.set_index('ID_MERGE').drop(list(set(drop_list))).reset_index()
+
+		df = df.merge(int_df[['ID_MERGE', 'NAHR_ANNO']], how='left').fillna('').drop_duplicates()
+
+		df['ANNO'] = df.apply(lambda row: ','.join([row[x] for x in ['INV_ANNO', 'INV-DUP-ANNO', 'TRANS-DUP-ANNO', 'NAHR_ANNO'] if row[x] != '']), axis=1)
+
+		df[['#CHROM','POS', 'END', 'SVTYPE_MERGE', 'SVLEN', 'ID_MERGE', 'CONTIG_SEQ_MERGE', 'ANNO']].to_csv(output.bed, sep='\t', index=False)
 
 
 rule bed9:
 	input:
-		bed = rules.var_join.output.bed
+		bed = rules.var_clean_anno.output.bed
 	output:
 		bed = 'results/bed9/{sample}/{sample}_saf.bed9'
 	threads: 1
@@ -648,7 +845,7 @@ rule bed9:
 		hrs = 24
 	run:
 		df = pd.read_csv(input.bed, sep='\t')
-		color_dict = {'DEL' : '220,0,0', 'DUP' : '0,0,220', 'INTER' : '0,220,0', 'INV' : '220,140,0', 'TRANSPOSE' : '128,0,128'}
+		color_dict = {'DEL' : '220,0,0', 'DUP' : '0,0,220', 'INTER' : '0,220,0', 'INV' : '220,140,0', 'TRANSPOSE' : '128,0,128', 'TRANSPOSE_INV' : '128,0,128'}
 		df['COLOR'] = df['SVTYPE_MERGE'].apply(lambda x : color_dict[x])
 		df['BED_END'] = df.apply(lambda row: row['END']+row['SVLEN'] if row['END']-row['POS'] == 1 else row['END'], axis=1)
 		df['SCORE'] = '0'
