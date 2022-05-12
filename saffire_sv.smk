@@ -648,7 +648,9 @@ rule inv_join:
 		try:
 			merge_df['SVTYPE_MERGE']
 		except:
-			merge_df['SVTYPE_MERGE'] == 'SINGLE'
+			merge_df['SVTYPE_MERGE'] = 'SINGLE'
+			merge_df['ID_MERGE'] = merge_df['ID']
+			merge_df['CONTIG_SEQ_MERGE'] = merge_df['CONTIG_SEQ']
 
 		merge_df = merge_df.fillna('SINGLE')
 		merge_df['SVTYPE'] = merge_df['SVTYPE'].str.replace('_GAP', '')
@@ -827,7 +829,7 @@ rule var_clean_anno:
 
 		df = df.set_index('ID_MERGE').drop(list(set(drop_list))).reset_index()
 
-		df = df.merge(int_df[['ID_MERGE', 'NAHR_ANNO']], how='left').fillna('').drop_duplicates()
+		df = df.merge(int_df.loc[int_df['NAHR_ANNO'] == 'NAHR'][['ID_MERGE', 'NAHR_ANNO']].drop_duplicates(), how='left').fillna('').drop_duplicates()
 
 		df['ANNO'] = df.apply(lambda row: ','.join([row[x] for x in ['INV_ANNO', 'INV-DUP-ANNO', 'TRANS-DUP-ANNO', 'NAHR_ANNO'] if row[x] != '']), axis=1)
 
