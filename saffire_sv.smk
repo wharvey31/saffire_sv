@@ -80,7 +80,7 @@ localrules: all
 
 rule all:
 	input:
-		expand('results/raw/{sample}/{sample}_var_all.bed', sample=manifest_df.index), expand('results/merged/{sample}/{sample}_var_all.bed', sample=manifest_df.index)
+		expand('results/clean/{sample}/{sample}_var_all.bed', sample=manifest_df.index)
 
 
 rule split_paf:
@@ -619,7 +619,7 @@ rule inv_join:
 			if len(node) == 1:
 				merge_df = merge_df.append(df.iloc[list(node)[0]])
 			else:
-				merges = df.iloc[min(node):max(node)].copy()
+				merges = df.iloc[min(node):max(node)+1].copy()
 				sv_start = min(merges['POS'])
 				sv_chrom = merges.iloc[0]['#CHROM']
 				if merges['SVTYPE'].unique()[0] == 'INV':
@@ -821,7 +821,7 @@ rule var_clean_anno:
 				drop_list.append(nahr_var_id)
 				drop_list.append(nahr_pair.iloc[0]['ID_MERGE_INT'])
 				int_df.at[index, 'NAHR_ANNO'] = 'NAHR'
-			if len(nahr_pair) == 0 and (np.abs(nahr_var_len-30000) < 10000) & len(int_df.loc[int_df['ID_MERGE'] == int_df.at[index, 'ID_MERGE']]) == 1:
+			if len(nahr_pair) == 0 and (np.abs(nahr_var_len-30000) < 25000) & len(int_df.loc[int_df['ID_MERGE'] == int_df.at[index, 'ID_MERGE']]) == 1:
 				drop_list.append(nahr_var_id)
 				int_df.at[index, 'NAHR_ANNO'] = 'NAHR'
 			else:
@@ -847,12 +847,12 @@ rule bed9:
 		hrs = 24
 	run:
 		df = pd.read_csv(input.bed, sep='\t')
-		color_dict = {'DEL' : '220,0,0', 'DUP' : '0,0,220', 'INTER' : '0,220,0', 'INV' : '220,140,0', 'TRANSPOSE' : '128,0,128', 'TRANSPOSE_INV' : '128,0,128'}
-		df['COLOR'] = df['SVTYPE_MERGE'].apply(lambda x : color_dict[x])
+		color_dict = {'DEL' : '220,0,0', 'DUP' : '0,0,220', 'INTER' : '0,220,0', 'INV' : '220,140,0', 'TRANSPOSE' : '128,0,128', 'TRANSPOSE_INV' : '128,0,128', 'GAP_NONSYN' : '0,0,0'}
+		df['COLOR'] = df['SVTYPE'].apply(lambda x : color_dict[x])
 		df['BED_END'] = df.apply(lambda row: row['END']+row['SVLEN'] if row['END']-row['POS'] == 1 else row['END'], axis=1)
 		df['SCORE'] = '0'
 		df['STRAND'] = '+'
-		df[['#CHROM', 'POS', 'BED_END', 'ID_MERGE', 'SCORE', 'STRAND', 'SCORE', 'SCORE', 'COLOR']].sort_values(['#CHROM', 'POS']).to_csv(output.bed, sep='\t', header=['#ct','st','en','name','score','strand','tst','ten','color'], index=False)
+		df[['#CHROM', 'POS', 'BED_END', 'ID', 'SCORE', 'STRAND', 'SCORE', 'SCORE', 'COLOR']].sort_values(['#CHROM', 'POS']).to_csv(output.bed, sep='\t', header=['#ct','st','en','name','score','strand','tst','ten','color'], index=False)
 
 
 rule saff_out:
@@ -868,3 +868,12 @@ rule saff_out:
 		'''
 		rb stats --paf {input.paf} > {output.saf}
 		'''
+
+
+rule make_bed:
+	input:
+		expand('results/bed9/{sample}/{sample}_saf.bed9', sample=manifest_df.index)
+
+rule make_saf:
+	input:
+		expand('results/saffire/{sample}/{sample}.saf', sample=manifest_df.index)
